@@ -1,0 +1,23 @@
+---
+---
+<div id="game-container"></div>
+
+<script>
+  import { createGame } from '../game/main';
+
+  // Initialize game on client side only
+  createGame();
+</script>
+
+<style>
+  #game-container {
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    margin-top: 2rem;
+    border: 4px solid #333;
+    border-radius: 8px;
+    box-shadow: 0 0 20px rgba(0,0,0,0.5);
+  }
+</style>
+
