@@ -32,3 +32,16 @@ export interface JournalEntry {
     debe: { name: string; value: number }[];
     haber: { name: string; value: number }[];
 }
+
+export interface MarketEvent {
+    id: string;
+    title: string;
+    description: string;
+    type: 'Compra' | 'Venta' | 'Evento';
+    amount: number;
+    requiresInvoice: boolean;
+    accountingEffect: {
+        debe: string[];
+        haber: string[];
+    };
+}

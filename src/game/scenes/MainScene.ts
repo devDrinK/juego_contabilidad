@@ -1,7 +1,10 @@
 import Phaser from 'phaser';
 import { Card } from '../objects/Card';
 import { HistoryPanel } from '../objects/HistoryPanel';
-import { AccountType, type AccountData, type JournalEntry } from '../types';
+import { AccountType, type AccountData, type JournalEntry, type MarketEvent } from '../types';
+import deskImg from '../../assets/elements/desk.jpg';
+import debeBoxImg from '../../assets/elements/debeBox-removebg-preview.png';
+import haberBoxImg from '../../assets/elements/haberBox-removebg-preview.png';
 
 export class MainScene extends Phaser.Scene {
     private debeZone!: Phaser.GameObjects.Zone;
@@ -24,7 +27,26 @@ export class MainScene extends Phaser.Scene {
     private companyCash: number = 1000;
     private capital: number = 5000;
     private taxCredit: number = 0;       // Acumulado Crédito Fiscal
+
     private taxObligation: number = 0;   // Acumulado Deudas Fiscales
+
+    // Turn System
+    private currentDay: number = 1;
+    private currentMonth: number = 1;
+    private actionPoints: number = 5;
+    private readonly MAX_ACTION_POINTS: number = 5;
+    private dailyHistory: string[] = []; // To track what happened each day
+
+    // Market System
+    private marketPool: MarketEvent[] = [];
+    private activeMission: MarketEvent | null = null;
+    private marketContainer!: Phaser.GameObjects.Container;
+    private missionText!: Phaser.GameObjects.Text;
+
+    // Turn UI
+    private dayText!: Phaser.GameObjects.Text;
+    private apText!: Phaser.GameObjects.Text;
+    private endDayBtnContainer!: Phaser.GameObjects.Container; // Container for button + text
 
     private libroDiario: JournalEntry[] = [];
     private accountLedgers: Map<string, number> = new Map();
@@ -33,9 +55,19 @@ export class MainScene extends Phaser.Scene {
         super('MainScene');
     }
 
+    preload() {
+        this.load.image('desk', deskImg.src);
+        this.load.image('debeBox', debeBoxImg.src);
+        this.load.image('haberBox', haberBoxImg.src);
+    }
+
     create() {
+        this.add.image(400, 300, 'desk').setDisplaySize(800, 600);
+        this.createZones();
         this.createZones();
         this.createUI();
+        this.initializeMarketPool();
+        this.generarMercado(); // Initial market for Day 1
         this.spawnCards();
         this.setupDragEvents();
         this.setupInputs();
@@ -46,12 +78,12 @@ export class MainScene extends Phaser.Scene {
 
     private createZones() {
         // DEBE Zone (Left)
-        this.add.rectangle(250, 260, 300, 350, 0x333333).setStrokeStyle(2, 0x666666);
+        this.add.image(250, 260, 'debeBox').setDisplaySize(300, 350);
         this.add.text(250, 70, 'DEBE', { fontSize: '24px', color: '#fff' }).setOrigin(0.5);
         this.debeZone = this.add.zone(250, 260, 300, 350).setRectangleDropZone(300, 350).setName('DEBE');
 
         // HABER Zone (Right)
-        this.add.rectangle(550, 260, 300, 350, 0x333333).setStrokeStyle(2, 0x666666);
+        this.add.image(550, 260, 'haberBox').setDisplaySize(300, 350);
         this.add.text(550, 70, 'HABER', { fontSize: '24px', color: '#fff' }).setOrigin(0.5);
         this.haberZone = this.add.zone(550, 260, 300, 350).setRectangleDropZone(300, 350).setName('HABER');
 
@@ -69,6 +101,16 @@ export class MainScene extends Phaser.Scene {
         this.add.rectangle(400, 25, 800, 50, 0x222222).setStrokeStyle(1, 0x444444);
         this.companyCashText = this.add.text(20, 15, `Efectivo: $${this.companyCash}`, { fontSize: '16px', color: '#4caf50' });
         this.capitalText = this.add.text(200, 15, `Capital: $${this.capital}`, { fontSize: '16px', color: '#ff9800' });
+
+        // Turn HUD
+        this.dayText = this.add.text(600, 15, `Día ${this.currentDay} de 7`, { fontSize: '16px', color: '#ffffff' });
+        this.apText = this.add.text(720, 15, `AP: ${this.actionPoints}/${this.MAX_ACTION_POINTS}`, { fontSize: '16px', color: '#2196f3' });
+
+        // End Day Button (Top Right now as requested)
+        this.createEndDayButton();
+
+        // Active Mission Text (Center Top)
+        this.missionText = this.add.text(400, 100, 'Misión: Ninguna', { fontSize: '18px', color: '#ffd700', fontStyle: 'bold' }).setOrigin(0.5);
 
         // Tax Panels (Sides)
 
@@ -134,6 +176,17 @@ export class MainScene extends Phaser.Scene {
         });
 
         this.input.on('drop', (pointer: Phaser.Input.Pointer, gameObject: Card, dropZone: Phaser.GameObjects.Zone) => {
+            // Check Action Points
+            if (this.actionPoints <= 0) {
+                this.showFeedback('Agotado. Termina el día.', 0xff5252);
+                // Return to deck
+                gameObject.x = this.deckZone.x + Phaser.Math.Between(-200, 200);
+                gameObject.y = this.deckZone.y + Phaser.Math.Between(-30, 30);
+                gameObject.setData('zone', 'DECK');
+                this.actualizarTotales();
+                return;
+            }
+
             // Apply drop position relative to zone
             if (dropZone.name === 'DECK') {
                 gameObject.x = dropZone.x + Phaser.Math.Between(-200, 200);
@@ -177,6 +230,31 @@ export class MainScene extends Phaser.Scene {
             return;
         }
 
+        // Action Point Check
+        if (this.actionPoints <= 0) {
+            this.showFeedback('No tienes energía. Termina el día.', 0xff5252);
+            return;
+        }
+
+        // Active Mission Validation
+        if (this.activeMission) {
+            if (sumDebe !== this.activeMission.amount) {
+                this.showFeedback(`Misión requiere $${this.activeMission.amount}`, 0xff5252);
+                return;
+            }
+
+            const debeNames = cardsDebe.map(c => c.textName.text);
+            const haberNames = cardsHaber.map(c => c.textName.text);
+
+            const missingDebe = this.activeMission.accountingEffect.debe.filter(req => !debeNames.includes(req));
+            const missingHaber = this.activeMission.accountingEffect.haber.filter(req => !haberNames.includes(req));
+
+            if (missingDebe.length > 0 || missingHaber.length > 0) {
+                this.showFeedback(`Faltan cuentas: ${[...missingDebe, ...missingHaber].join(', ')}`, 0xff5252);
+                return;
+            }
+        }
+
         if (sumDebe !== sumHaber) {
             this.showFeedback(`No balancea. Diferencia: $${sumDebe - sumHaber}`, 0xff0000);
             return;
@@ -205,6 +283,9 @@ export class MainScene extends Phaser.Scene {
         this.time.delayedCall(1000, () => {
             this.spawnCards();
         });
+
+        // Consume Action Point
+        this.validateActionPointConsumption();
     }
 
     private showFeedback(message: string, color: number) {
@@ -247,5 +328,151 @@ export class MainScene extends Phaser.Scene {
 
         this.creditPanelText.setText(`$${this.taxCredit}`);
         this.obligationPanelText.setText(`$${this.taxObligation}`);
+    }
+
+    private createEndDayButton() {
+        const x = 720;
+        const y = 50; // Moved to top right
+        const btn = this.add.rectangle(0, 0, 120, 30, 0xd32f2f).setStrokeStyle(1, 0xff5252);
+        const text = this.add.text(0, 0, 'Terminar Día', { fontSize: '14px', color: '#fff' }).setOrigin(0.5);
+
+        this.endDayBtnContainer = this.add.container(x, y, [btn, text]);
+        this.endDayBtnContainer.setSize(120, 40).setInteractive({ useHandCursor: true });
+
+        this.endDayBtnContainer.on('pointerdown', () => this.endDay());
+    }
+
+    private validateActionPointConsumption() {
+        this.actionPoints--;
+        this.updateTimeHUD();
+
+        if (this.actionPoints === 0) {
+            this.showFeedback('¡Estás agotado! Cierra la oficina.', 0xff9800);
+            // Optional: Visually disable trays or change their alpha
+        }
+    }
+
+    private endDay() {
+        // Summary for valid day
+        this.dailyHistory.push(`Día ${this.currentDay}: Efectivo ${this.companyCash}, Capital ${this.capital}`);
+
+        this.currentDay++;
+        this.actionPoints = this.MAX_ACTION_POINTS;
+
+        if (this.currentDay > 7) {
+            this.endMonth();
+        } else {
+            this.showFeedback(`Inicia el Día ${this.currentDay}`, 0x2196f3);
+            this.updateTimeHUD();
+            this.generarMercado(); // New market for new day
+            this.spawnCards(); // Respawn cards for new day challenges
+        }
+    }
+
+    private initializeMarketPool() {
+        this.marketPool = [
+            {
+                id: '1', title: 'Venta de Servicios', description: 'Cliente paga honorarios.',
+                type: 'Venta', amount: 500, requiresInvoice: true,
+                accountingEffect: { debe: ['Caja'], haber: ['Venta Servicios'] }
+            },
+            {
+                id: '2', title: 'Compra de Insumos', description: 'Compra de papel y tinta.',
+                type: 'Compra', amount: 200, requiresInvoice: true,
+                accountingEffect: { debe: ['Compra Mercadería'], haber: ['Caja'] }
+            },
+            {
+                id: '3', title: 'Pago de Deuda', description: 'Pagar a proveedores.',
+                type: 'Evento', amount: 100, requiresInvoice: false,
+                accountingEffect: { debe: ['Ctas x Pagar'], haber: ['Caja'] }
+            },
+            {
+                id: '4', title: 'Aporte de Capital', description: 'Socio aporta efectivo.',
+                type: 'Evento', amount: 1000, requiresInvoice: false,
+                accountingEffect: { debe: ['Caja'], haber: ['Capital Social'] }
+            },
+            {
+                id: '5', title: 'Retiro Personal', description: 'Dueño retira dinero.',
+                type: 'Evento', amount: 50, requiresInvoice: false,
+                accountingEffect: { debe: ['Gastos Personales'], haber: ['Caja'] }
+            }
+        ];
+    }
+
+    private generarMercado() {
+        // Reset active mission logic? Or carry over? Assuming daily reset.
+        this.activeMission = null;
+        this.missionText.setText('Misión: Selecciona del Mercado');
+
+        // Select 3 random
+        const shuffled = [...this.marketPool].sort(() => 0.5 - Math.random());
+        const selected = shuffled.slice(0, 3);
+
+        this.showMarketUI(selected);
+    }
+
+    private showMarketUI(events: MarketEvent[]) {
+        if (this.marketContainer) this.marketContainer.destroy();
+
+        this.marketContainer = this.add.container(400, 300);
+
+        // Background overlay
+        const bg = this.add.rectangle(0, 0, 800, 600, 0x000000, 0.8).setInteractive();
+        this.marketContainer.add(bg);
+
+        const title = this.add.text(0, -250, `Mercado - Día ${this.currentDay}`, { fontSize: '32px', color: '#fff', fontStyle: 'bold' }).setOrigin(0.5);
+        this.marketContainer.add(title);
+
+        events.forEach((event, index) => {
+            const x = (index - 1) * 220;
+            const y = 0;
+
+            const cardBg = this.add.rectangle(x, y, 200, 300, 0x333333).setStrokeStyle(2, 0x888888);
+            const titleTxt = this.add.text(x, y - 120, event.title, { fontSize: '18px', color: '#4caf50', wordWrap: { width: 180 } }).setOrigin(0.5);
+            const descTxt = this.add.text(x, y - 50, event.description, { fontSize: '14px', color: '#ccc', wordWrap: { width: 180 }, align: 'center' }).setOrigin(0.5);
+            const amountTxt = this.add.text(x, y + 20, `$${event.amount}`, { fontSize: '24px', color: '#ffd700' }).setOrigin(0.5);
+
+            // Accept Button
+            const btnBg = this.add.rectangle(x, y + 100, 160, 40, 0x2196f3).setInteractive({ useHandCursor: true });
+            const btnTxt = this.add.text(x, y + 100, 'ACEPTAR', { fontSize: '18px', color: '#fff' }).setOrigin(0.5);
+
+            btnBg.on('pointerdown', () => {
+                this.acceptMission(event);
+            });
+
+            this.marketContainer.add([cardBg, titleTxt, descTxt, amountTxt, btnBg, btnTxt]);
+        });
+    }
+
+    private acceptMission(event: MarketEvent) {
+        this.activeMission = event;
+        this.missionText.setText(`Misión: ${event.title} ($${event.amount})`);
+
+        if (this.marketContainer) {
+            this.marketContainer.destroy();
+        }
+
+        this.showFeedback(`Misión Aceptada: ${event.title}`, 0x4caf50);
+    }
+
+    private endMonth() {
+        alert('Cierre de Mes Completado!');
+        // Reset for new month loop (Simplified for now)
+        this.currentDay = 1;
+        this.currentMonth++;
+        this.actionPoints = this.MAX_ACTION_POINTS;
+        this.updateTimeHUD();
+        this.showFeedback(`Inicia el Mes ${this.currentMonth}`, 0x4caf50);
+    }
+
+    private updateTimeHUD() {
+        this.dayText.setText(`Día ${this.currentDay} de 7`);
+        this.apText.setText(`AP: ${this.actionPoints}/${this.MAX_ACTION_POINTS}`);
+
+        if (this.actionPoints === 0) {
+            this.apText.setColor('#ff5252');
+        } else {
+            this.apText.setColor('#2196f3');
+        }
     }
 }
