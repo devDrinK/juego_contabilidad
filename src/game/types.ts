@@ -6,6 +6,26 @@ export enum AccountType {
     Expense = 'Expense'      // Egreso (Purple)
 }
 
+export enum AccountCategory {
+    Real = 'Real',       // Círculo (Activo, Pasivo, Patrimonio)
+    Nominal = 'Nominal', // Triángulo (Ingreso, Gasto)
+    Orden = 'Orden'      // Hexágono (Cuentas de control)
+}
+
+export function getCategoryByType(type: AccountType): AccountCategory {
+    switch (type) {
+        case AccountType.Asset:
+        case AccountType.Liability:
+        case AccountType.Equity:
+            return AccountCategory.Real;
+        case AccountType.Revenue:
+        case AccountType.Expense:
+            return AccountCategory.Nominal;
+        default:
+            return AccountCategory.Orden;
+    }
+}
+
 export interface AccountData {
     id: string;
     name: string;
@@ -23,6 +43,9 @@ export interface GameState {
     capital: number;
     taxCredit: number;      // IVA CF
     taxObligation: number;  // IVA DF + IT + Retentions
+    accumulatedResults: number; // Resultados Acumulados
+    currentDay: number;
+    currentMonth: number;
 }
 
 export interface JournalEntry {
